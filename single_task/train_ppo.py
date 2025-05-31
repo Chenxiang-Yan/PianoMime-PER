@@ -169,8 +169,12 @@ def main(args: Args) -> None:
                 print("best_f1:{}->{}".format(best_f1, eval_env.env.get_musical_metrics()["f1"]))
                 best_f1 = eval_env.env.get_musical_metrics()["f1"]
                 model.save("./robopianist_rl/ckpts/{}_best".format(run_name))
-                # video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
+                video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
                 # wandb.log({"video": video, "global_step": i})
+                try:
+                    shutil.copy(str(eval_env.env.latest_filename), "./robopianist_rl/ckpts/{}.mp4".format(run_name))
+                finally:
+                    pass
             
             eval_env.env.latest_filename.unlink()  
     except KeyboardInterrupt:
