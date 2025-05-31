@@ -2,5 +2,3 @@ __pycache__/
 ckpts/
 tutorial/
 robopianist/
-dataset_hl.zarr/
-dataset_ll.zarr/
