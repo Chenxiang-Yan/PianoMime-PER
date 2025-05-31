@@ -1,14 +1,15 @@
 import numpy as np
 from stable_baselines3.common.buffers import RolloutBuffer
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, Any
 from collections.abc import Generator
-from stable_baselines3.common.type_aliases import RolloutBufferSamples
+from stable_baselines3.common.type_aliases import RolloutBufferSamples, GymEnv, Schedule
 from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3 import PPO
+from stable_baselines3.ppo import PPO
 from gymnasium import spaces
 import torch as th
 from torch.nn import functional as F
 from stable_baselines3.common.utils import explained_variance
+from stable_baselines3.common.policies import ActorCriticPolicy
 
 class RolloutPrioritizedReplayBuffer(RolloutBuffer):
     def __init__(
@@ -30,13 +31,6 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         assert self.full, ""
 
         # indices = np.random.permutation(self.buffer_size * self.n_envs)
-        ##### OUR MODIFICATION #####
-
-        p = np.abs(self.advantages.T)       # (n_envs, buffer_size) 
-        p = (p + self.eps) ** self.alpha
-        p /= p.sum(axis=-1)
-
-        ############################
         
         # Prepare the data
         if not self.generator_ready:
@@ -52,6 +46,22 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
             self.generator_ready = True
+        
+        ##### OUR MODIFICATION #####
+        # after the "Prepare the data" step, the shape of buffer data are:
+        # self.observations: (n_envs*buffer_size, 4832(obs_dim))
+        # self.actions: (n_envs*buffer_size, 47(action_dim))
+        # self.values: (n_envs*buffer_size, 1)
+        # self.log_probs: (n_envs*buffer_size, 1)
+        # self.advantages: (n_envs*buffer_size, 1)
+        # self.returns: (n_envs*buffer_size, 1)
+
+        self.p = np.abs(self.advantages.flatten())       # (n_envs*buffer_size, ), the order of 0-th dimension is (n_envs, buffer_size) 
+                                                    # i.e. different envs at the same timestep are gathered
+        self.p = (self.p + self.eps) ** self.alpha
+        self.p /= self.p.sum()
+
+        ############################
 
         # Return everything, don't create minibatches
         if batch_size is None:
@@ -61,11 +71,7 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         while start_idx < self.buffer_size * self.n_envs:
             ##### OUR MODIFICATION #####
 
-            indices = np.stack([
-                np.random.choice(self.buffer_size, size=batch_size, p=p_env, replace=True)
-                for p_env in p
-            ], axis=1).T                          # (batch_size, n_env)
-
+            indices = np.random.choice(self.n_envs*self.buffer_size, size=batch_size, p=self.p, replace=True)
             yield self._get_samples(indices)
 
             ############################
@@ -77,92 +83,56 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         batch_inds: np.ndarray,
         env: Optional[VecNormalize] = None,
     ) -> Tuple[RolloutBufferSamples, np.ndarray]:
-        
+
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+        )
         ##### OUR MODIFICATION #####
 
-        batch_size = batch_inds.shape[-1]
-        data = (
-            self.observations[np.arange(batch_size)[:, None], batch_inds],
-            self.actions[np.arange(batch_size)[:, None], batch_inds],
-            self.values[np.arange(batch_size)[:, None], batch_inds].flatten(),
-            self.log_probs[np.arange(batch_size)[:, None], batch_inds].flatten(),
-            self.advantages[np.arange(batch_size)[:, None], batch_inds].flatten(),
-            self.returns[np.arange(batch_size)[:, None], batch_inds].flatten(),
-        )
-        priorities = self.p[np.arange(batch_size)[:, None], batch_inds]
-
+        priorities = self.p[batch_inds]
         return RolloutBufferSamples(*tuple(map(self.to_torch, data))), priorities
         
         ############################
 
-        # data = (
-        #     self.observations[batch_inds],
-        #     self.actions[batch_inds],
-        #     self.values[batch_inds].flatten(),
-        #     self.log_probs[batch_inds].flatten(),
-        #     self.advantages[batch_inds].flatten(),
-        #     self.returns[batch_inds].flatten(),
-        # )
         # return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
 
 class PERPPO(PPO):
     def __init__(
-        self, 
-        policy, 
-        env, 
-        learning_rate = 0.0003, 
-        n_steps = 2048, 
-        batch_size = 64, 
-        n_epochs = 10, 
-        gamma = 0.99, 
-        gae_lambda = 0.95, 
-        clip_range = 0.2, 
-        clip_range_vf = None, 
-        normalize_advantage = True, 
-        ent_coef = 0, 
-        vf_coef = 0.5, 
-        max_grad_norm = 0.5, 
-        use_sde = False, 
-        sde_sample_freq = -1, 
-        rollout_buffer_class = RolloutPrioritizedReplayBuffer, 
-        rollout_buffer_kwargs = None, 
-        target_kl = None, 
-        stats_window_size = 100, 
-        tensorboard_log = None, 
-        policy_kwargs = None, 
-        verbose = 0, 
-        seed = None, 
-        device = "auto", 
-        _init_setup_model = True
-    ):
-        super().__init__(
-            policy, 
-            env, 
-            learning_rate, 
-            n_steps, 
-            batch_size, 
-            n_epochs, 
-            gamma, 
-            gae_lambda, 
-            clip_range, 
-            clip_range_vf, 
-            normalize_advantage, 
-            ent_coef, 
-            vf_coef, 
-            max_grad_norm, 
-            use_sde, 
-            sde_sample_freq, 
-            rollout_buffer_class, 
-            rollout_buffer_kwargs, 
-            target_kl, 
-            stats_window_size, 
-            tensorboard_log, 
-            policy_kwargs, 
-            verbose, 
-            seed, 
-            device, 
-            _init_setup_model
-        )
+        self,
+        policy: Union[str, type[ActorCriticPolicy]],
+        env: Union[GymEnv, str],
+        learning_rate: Union[float, Schedule] = 3e-4,
+        n_steps: int = 2048,
+        batch_size: int = 64,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_range: Union[float, Schedule] = 0.2,
+        clip_range_vf: Union[None, float, Schedule] = None,
+        normalize_advantage: bool = True,
+        ent_coef: float = 0.0,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        use_sde: bool = False,
+        sde_sample_freq: int = -1,
+        rollout_buffer_class: Optional[type[RolloutBuffer]] = None,
+        rollout_buffer_kwargs: Optional[dict[str, Any]] = None,
+        target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
+        tensorboard_log: Optional[str] = None,
+        policy_kwargs: Optional[dict[str, Any]] = None,
+        verbose: int = 0,
+        seed: Optional[int] = None,
+        device: Union[th.device, str] = "auto",
+        _init_setup_model: bool = True,
+    ):        
+        super().__init__(policy, env, learning_rate, n_steps, batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, normalize_advantage, ent_coef, vf_coef, max_grad_norm, use_sde, sde_sample_freq, rollout_buffer_class, rollout_buffer_kwargs, target_kl, stats_window_size, tensorboard_log, policy_kwargs, verbose, seed, device, _init_setup_model)
+       
     def train(self) -> None:
         """
         Update policy using the currently gathered rollout buffer.
@@ -190,12 +160,11 @@ class PERPPO(PPO):
             # for rollout_data in self.rollout_buffer.get(self.batch_size):
 
             ##### OUR MODIFICATION #####
+
             for rollout_data, priorities in self.rollout_buffer.get(self.batch_size):
                 weight_per = (1 / self.rollout_buffer.buffer_size / priorities) ** self.rollout_buffer.beta
-                weight_per /= np.max(weight_per)    # (batch_size, n_env)
-                weight_per = weight_per.flatten()   # (batch_size*n_env,) - in order to match the shape of \
-                                                    #     self.rollout_buffer.advantage and self.rollout_buffer.value
-                weight_per = th.as_tensor(weight_per)
+                weight_per /= np.max(weight_per)    
+                weight_per = th.as_tensor(weight_per).to(self.device)   # (batch_size,)
 
                 ############################
                 actions = rollout_data.actions

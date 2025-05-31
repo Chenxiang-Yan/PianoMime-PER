@@ -97,7 +97,7 @@ def main(args: Args) -> None:
     if args.name:
         run_name = args.name
     else:
-        run_name = f"PPO-{args.environment_name}-{args.seed}-{time.time()}"
+        run_name = f"PERPPO-{args.environment_name}-{args.seed}-{time.time()}"
 
     # Create experiment directory.
     experiment_dir = Path(args.root_dir) / run_name
@@ -107,7 +107,7 @@ def main(args: Args) -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    # key='<your wandb api key>'
+    # key=''
     # wandb.login(key=key)
 
     # wandb.init(
@@ -165,14 +165,18 @@ def main(args: Args) -> None:
             music_dict = prefix_dict("eval", eval_env.env.get_musical_metrics())
             # wandb.log(log_dict | music_dict, step=i)
             # if args.deepmimic:
-                # wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
+            #     wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
             f1 = eval_env.env.get_musical_metrics()["f1"]
             if f1 > best_f1:
                 print("best_f1:{}->{}".format(best_f1, eval_env.env.get_musical_metrics()["f1"]))
                 best_f1 = eval_env.env.get_musical_metrics()["f1"]
                 model.save("./robopianist_rl/ckpts/{}_best".format(run_name))
-                # video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
+                video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
                 # wandb.log({"video": video, "global_step": i})
+                try:
+                    shutil.copy(str(eval_env.env.latest_filename), "./robopianist_rl/ckpts/{}.mp4".format(run_name))
+                finally:
+                    pass
             
             eval_env.env.latest_filename.unlink()  
     except KeyboardInterrupt:
