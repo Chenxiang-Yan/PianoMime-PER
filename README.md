@@ -19,5 +19,4 @@ bash pianomime/single_task/run_ppo.sh
 __pycache__/
 ckpts/
 tutorial/
-robopianist/
 ```
