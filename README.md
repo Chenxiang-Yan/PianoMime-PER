@@ -13,7 +13,6 @@ Run the baseline PPO algorithm:
 ```sh
 bash pianomime/single_task/run_ppo.sh
 ```
-```
 **Note that the folders are not complete:**
 ```gitignore
 __pycache__/
