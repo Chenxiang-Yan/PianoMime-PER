@@ -59,7 +59,6 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         self.p = np.abs(self.advantages.flatten())       # (n_envs*buffer_size, ), the order of 0-th dimension is (n_envs, buffer_size) 
                                                     # i.e. different envs at the same timestep are gathered
         self.p = (self.p + self.eps) ** self.alpha
-        self.p /= self.p.sum()
 
         ############################
 
@@ -71,7 +70,7 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         while start_idx < self.buffer_size * self.n_envs:
             ##### OUR MODIFICATION #####
 
-            indices = np.random.choice(self.n_envs*self.buffer_size, size=batch_size, p=self.p, replace=True)
+            indices = np.random.choice(self.n_envs*self.buffer_size, size=batch_size, p=self.p / self.p.sum(), replace=True)
             yield self._get_samples(indices)
 
             ############################
@@ -82,7 +81,7 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         self,
         batch_inds: np.ndarray,
         env: Optional[VecNormalize] = None,
-    ) -> Tuple[RolloutBufferSamples, np.ndarray]:
+    ) -> Tuple[RolloutBufferSamples, np.ndarray, np.ndarray]:
 
         data = (
             self.observations[batch_inds],
@@ -95,7 +94,7 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         ##### OUR MODIFICATION #####
 
         priorities = self.p[batch_inds]
-        return RolloutBufferSamples(*tuple(map(self.to_torch, data))), priorities
+        return RolloutBufferSamples(*tuple(map(self.to_torch, data))), priorities, batch_inds
         
         ############################
 
@@ -161,10 +160,10 @@ class PERPPO(PPO):
 
             ##### OUR MODIFICATION #####
 
-            for rollout_data, priorities in self.rollout_buffer.get(self.batch_size):
+            for rollout_data, priorities, indices in self.rollout_buffer.get(self.batch_size):
                 weight_per = (1 / self.rollout_buffer.buffer_size / priorities) ** self.rollout_buffer.beta
                 weight_per /= np.max(weight_per)    
-                weight_per = th.as_tensor(weight_per).to(self.device)   # (batch_size,)
+                weight_per = th.as_tensor(weight_per).to(self.device)  # (batch_size,)
 
                 ############################
                 actions = rollout_data.actions
@@ -248,6 +247,16 @@ class PERPPO(PPO):
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
+
+                ##### OUR MODIFICATION #####
+
+                values_new, _, _ = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values_new = values_new.flatten().detach().cpu().numpy()
+                td_targ = rollout_data.returns.detach().cpu().numpy()
+                p_batch_update = (np.abs(td_targ - values_new) + self.rollout_buffer.eps) ** self.rollout_buffer.alpha
+                self.rollout_buffer.p[indices] = np.array(p_batch_update)
+
+                ############################
 
             self._n_updates += 1
             if not continue_training:
