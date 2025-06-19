@@ -28,6 +28,7 @@ from mujoco_utils import composer_utils
 import gymnasium as gym
 import pickle
 from stable_baselines3.common.utils import set_random_seed
+from HER import Dm2GymInfoWrapper, ViewObsConcatObservationWrapper
 
 def get_env_no_residual(args, record_dir: Optional[Path] = None):
     left_hand_action_list = np.load(
@@ -199,6 +200,8 @@ def get_env(args, record_dir: Optional[Path] = None):
     if args.action_reward_observation:
         env = wrappers.ObservationActionRewardWrapper(env)
     env = wrappers.ConcatObservationWrapper(env)
+    # env = ViewObsConcatObservationWrapper(env)
+    # print(env._obs_info)
     if args.frame_stack > 1:
         env = wrappers.FrameStackingWrapper(
             env, num_frames=args.frame_stack, flatten=True
@@ -206,7 +209,8 @@ def get_env(args, record_dir: Optional[Path] = None):
     env = wrappers.CanonicalSpecWrapper(env, clip=args.clip)
     env = wrappers.SinglePrecisionWrapper(env)
     env = wrappers.DmControlWrapper(env)
-    env = robopianist_wrappers.Dm2GymWrapper(env)
+    # env = robopianist_wrappers.Dm2GymWrapper(env)
+    env = Dm2GymInfoWrapper(env)        # this is our modification for relaying HER rewards
     return env
 
 def make_envs(make_env_fn, rank, seed=0):

@@ -290,6 +290,9 @@ class DeepMimicWrapper(EnvironmentWrapper):
             )
             rew = float(np.mean(rews))
         self.end_effector_mimic_rew += rew
+
+        self.task._her_mimic_reward = np.array(rew)
+        
         return rew
 
     def _add_deep_mimic_rewards(self):
