@@ -90,6 +90,11 @@ class Args:
     curriculum: bool = False
     total_iters: int = 1000
 
+    ###################
+    initial_mimic_temp = 4
+    mimic_temp_discount = 3e-3
+    ####################
+
 def prefix_dict(prefix: str, d: dict) -> dict:
     return {f"{prefix}/{k}": v for k, v in d.items()}
 
@@ -110,12 +115,12 @@ def main(args: Args) -> None:
     # key=''
     # wandb.login(key=key)
 
-    # wandb.init(
-    #     project=args.project,
-    #     config=asdict(args),
-    #     name=run_name,
-    #     sync_tensorboard=True,
-    # )
+    wandb.init(
+        project=args.project,
+        config=asdict(args),
+        name=run_name,
+        sync_tensorboard=True,
+    )
     eval_args = copy(args)
     eval_args = replace(eval_args, rsi=False)
     eval_env = get_env(eval_args, record_dir=experiment_dir / "eval")
@@ -163,9 +168,9 @@ def main(args: Args) -> None:
                     break
             log_dict = prefix_dict("eval", eval_env.env.get_statistics())
             music_dict = prefix_dict("eval", eval_env.env.get_musical_metrics())
-            # wandb.log(log_dict | music_dict, step=i)
-            # if args.deepmimic:
-            #     wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
+            wandb.log(log_dict | music_dict, step=i)
+            if args.deepmimic:
+                wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
             f1 = eval_env.env.get_musical_metrics()["f1"]
             if f1 > best_f1:
                 print("best_f1:{}->{}".format(best_f1, eval_env.env.get_musical_metrics()["f1"]))

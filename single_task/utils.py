@@ -124,7 +124,7 @@ def get_env(args, record_dir: Optional[Path] = None):
         with open(f"dataset/notes/{args.mimic_task}.pkl", "rb") as f:
             note_traj = pickle.load(f)
             task = piano_with_shadow_hands_res.PianoWithShadowHandsResidual(
-                note_trajectory=note_traj,
+                note_trajectory=note_traj,                              # for ?
                 change_color_on_activation=True,
                 wrong_press_termination=args.wrong_press_termination,
                 trim_silence=trim,
@@ -169,6 +169,10 @@ def get_env(args, record_dir: Optional[Path] = None):
             remove_goal_observation=False,
             mimic_z_axis=args.mimic_z_axis,
             n_steps_lookahead=args.n_steps_lookahead,
+            env_num = args.num_envs,
+            temp_initial= args.initial_mimic_temp,
+            temp_discount= args.mimic_temp_discount,
+            step_per_rollout= args.n_steps,
         )
     if args.residual_action:
         print("residual action")

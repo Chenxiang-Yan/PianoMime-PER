@@ -177,6 +177,10 @@ class DeepMimicWrapper(EnvironmentWrapper):
         n_steps_lookahead: int = 2,
         mimic_z_axis: bool = False,    
         rsi: bool = False,
+        env_num: Optional[int] = 32,
+        temp_initial: float = 4,
+        temp_discount: float = 3e-3,
+        step_per_rollout: int = 512
     ) -> None:
         super().__init__(environment)
         self._demonstrations_lh = demonstrations_lh
@@ -220,6 +224,16 @@ class DeepMimicWrapper(EnvironmentWrapper):
                                                self._environment.task.control_timestep))
         self._demonstrations_length = self._demonstrations_lh.shape[0]
         self._action_divergence_termination = False
+
+        
+        ######################## modification ########################
+        self.step_count = 0
+        self._env_num =  env_num
+        self.a = temp_initial
+        self.b = temp_discount
+        self._step_per_rollout = step_per_rollout
+        #############################################
+
     
     def observation_spec(self):
         return self._observation_spec
@@ -227,6 +241,7 @@ class DeepMimicWrapper(EnvironmentWrapper):
     def step(self, action) -> dm_env.TimeStep:
         timestep = self._environment.step(action)
         self._reference_frame_idx = int(min(self._reference_frame_idx+self._step_scale, self._demonstrations_length-1))
+        self.step_count += 1
         return self._remove_goal_observation(self._add_demo_observation(timestep))
 
     def reset(self) -> dm_env.TimeStep:
@@ -235,6 +250,8 @@ class DeepMimicWrapper(EnvironmentWrapper):
         self.end_effector_mimic_rew_z = 0
         self._reference_frame_idx = -int(round(self._environment.task._initial_buffer_time/
                                             self._environment.task.control_timestep))
+        
+        self.step_count += 1
         return self._remove_goal_observation(self._add_demo_observation(timestep))
 
     def get_fingertip_pos(self) -> np.ndarray:
@@ -246,6 +263,15 @@ class DeepMimicWrapper(EnvironmentWrapper):
         lh_current = np.concatenate((lh_wrist, lh_fingertips))
         rh_current = np.concatenate((rh_wrist, rh_fingertips))
         return lh_current, rh_current
+    
+        
+    def temperature_func(self)-> float:
+        '''
+        a * exp( -(step-1) * b)
+        '''
+        t = self.a * math.exp(-self.step_count/self._step_per_rollout * self.b)
+        return t
+    
     
     def _compute_end_effector_pos_mimic_reward(self, physics: mjcf.Physics) -> float:
         """Computes the reward for matching the end effector positions."""
@@ -290,7 +316,7 @@ class DeepMimicWrapper(EnvironmentWrapper):
             )
             rew = float(np.mean(rews))
         self.end_effector_mimic_rew += rew
-        return rew
+        return rew * self.temperature_func()                            # modification
 
     def _add_deep_mimic_rewards(self):
         self.task._reward_fn.add("end_effector_pos_mimic", self._compute_end_effector_pos_mimic_reward)

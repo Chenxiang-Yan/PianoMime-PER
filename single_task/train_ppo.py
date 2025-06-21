@@ -90,6 +90,11 @@ class Args:
     curriculum: bool = False
     total_iters: int = 1000
 
+    ###################
+    initial_mimic_temp = 4
+    mimic_temp_discount = 3e-3
+    ####################
+
 def prefix_dict(prefix: str, d: dict) -> dict:
     return {f"{prefix}/{k}": v for k, v in d.items()}
 
@@ -163,13 +168,13 @@ def main(args: Args) -> None:
             music_dict = prefix_dict("eval", eval_env.env.get_musical_metrics())
             # wandb.log(log_dict | music_dict, step=i)
             # if args.deepmimic:
-                # wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
+            #     wandb.log(prefix_dict("eval", eval_env.env.get_deepmimic_rews()), step=i)
             f1 = eval_env.env.get_musical_metrics()["f1"]
             if f1 > best_f1:
                 print("best_f1:{}->{}".format(best_f1, eval_env.env.get_musical_metrics()["f1"]))
                 best_f1 = eval_env.env.get_musical_metrics()["f1"]
                 model.save("./robopianist_rl/ckpts/{}_best".format(run_name))
-                video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
+                # video = wandb.Video(str(eval_env.env.latest_filename), fps=4, format="mp4")
                 # wandb.log({"video": video, "global_step": i})
                 try:
                     shutil.copy(str(eval_env.env.latest_filename), "./robopianist_rl/ckpts/{}.mp4".format(run_name))
