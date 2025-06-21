@@ -11,6 +11,7 @@ from torch.nn import functional as F
 from stable_baselines3.common.utils import explained_variance, obs_as_tensor
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.callbacks import BaseCallback
+from dm_control.utils.rewards import tolerance
 
 SelfHERPPO = TypeVar("SelfHERPPO", bound="HERPPO")
  
@@ -23,25 +24,6 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
         **kwargs
     ):
         super().__init__(buffer_size, observation_space, action_space, **kwargs)
-        self.norm_coeff = np.array([0.06656816, 0.08865588,
-            0.06656816, 0.06656816, 0.08865588,
-            0.06656816, 0.08865588, 0.06656816, 0.06656816, 0.08865588,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.08865588, 0.06656816, 0.06656816, 0.08865588, 0.06656816,
-            0.08865588, 0.06656816, 0.06656816, 0.08865588, 0.06656816,
-            0.08865588, 0.06656816, 0.08865588, 0.06656816, 0.06656816,
-            0.08865588, 0.06656816, 0.08865588, 0.06656816, 0.06656816,
-            0.08865588, 0.06656816, 0.08865588, 0.06656816, 0.08865588,
-            0.06656816, 0.06656816, 0.08865588, 0.06656816, 0.08865588,
-            0.06656816, 0.06656816, 0.08865588, 0.06656816, 0.08865588,
-            0.06656816, 0.08865588, 0.06656816, 0.06656816, 0.08865588,
-            0.06656816, 0.08865588, 0.06656816, 0.06656816, 0.08865588,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.06656816, 0.08865588, 0.06656816, 0.08865588, 0.06656816,
-            0.08865588, 0.06656816, 0.06656816])
         self.replay_k = 4
         self.future_p = 1 - (1.0 / (1 + self.replay_k))     # prob. of replace original sample with HER sample, here p=0.8
     
@@ -50,8 +32,10 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
         obs: np.ndarray,
         action: np.ndarray,
         reward: np.ndarray,
-        her_reward: np.ndarray,
-        new_obs: np.ndarray,
+        mimic_reward: np.ndarray,
+        curr_goal: np.ndarray,
+        curr_piano_and_sustain: np.ndarray,
+        piano_activation: np.ndarray,
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
@@ -83,8 +67,10 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
         self.rewards[self.pos] = np.array(reward)
 
         ##### our modification #####
-        self.her_rewards[self.pos] = np.array(her_reward)
-        self.next_observations[self.pos] = np.array(new_obs)
+        self.mimic_rewards[self.pos] = np.array(mimic_reward)
+        self.current_goal[self.pos] = np.array(curr_goal)
+        self.current_piano_and_sustain[self.pos] = np.array(curr_piano_and_sustain)
+        self.piano_activation[self.pos] = np.array(piano_activation)
         ############################
 
         self.episode_starts[self.pos] = np.array(episode_start)
@@ -97,35 +83,77 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
     ##### our modification #####
     def reset(self) -> None:
         super().reset()
-        self.her_rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
+        self.mimic_rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.current_goal = np.zeros((self.buffer_size, self.n_envs, 89), dtype=np.float32)
+        self.current_piano_and_sustain = np.zeros((self.buffer_size, self.n_envs, 89), dtype=np.float32)
+        self.piano_activation = np.zeros((self.buffer_size, self.n_envs, 88), dtype=np.float32)
 
-    def extract_piano_and_sustain_state_from_obs(self, obs):
-        batch_shape = (self.buffer_size, self.n_envs)
-        piano_state = obs[..., (15+15+10+979+27)*4 : (15+15+10+979+27)*4+88*4].reshape(*batch_shape, -1, 4) / self.norm_coeff
-        sustain_state = obs[..., (15+15+10+979+27+88)*4 : (15+15+10+979+27+88)*4+1*4].reshape(*batch_shape, -1, 4)
-        assert piano_state.shape[-2] == 88 and sustain_state.shape[-2] == 1
-        return np.concatenate((piano_state, sustain_state), axis=-2)    # (*batch_shape, 89, 4)
+    def generate_piano_and_sustain_state(self, current_piano_and_sustain):
+        piano_sustain_obs = np.zeros((self.buffer_size, self.n_envs, 89, 4), dtype=np.float32)
+        zero_padding = np.zeros((3, self.n_envs, 89), dtype=np.float32)
+        piano_and_sustain = np.concatenate((zero_padding, current_piano_and_sustain), axis=0)  # (buffer_size+3, n_envs, 89)
+        for i in range(self.buffer_size):
+            piano_sustain_obs[i] = piano_and_sustain[i:i+4].transpose(1,2,0)    # (n_envs, 89, 4)
+        return piano_sustain_obs    # (buffer_size, n_envs, 89, 4)
 
-    def generate_her_goal(self):
+    def generate_her_goal(self, current_piano_and_sustain):
         her_goal = np.zeros((self.buffer_size, self.n_envs, 979*4), dtype=np.float32)     # (88+1)*(10+1)*4, n_piano_states=88, n_step_lookahead=10, n_framestack=4
 
-        piano_sustain_obs = self.extract_piano_and_sustain_state_from_obs(self.observations)
-        zero_padding = np.zeros((10, self.n_envs, 89, 4), dtype=np.float32)   # n_step_lookahead=10
-        piano_sustain_obs = np.concatenate((piano_sustain_obs, zero_padding), axis=0)   # (buffer_size+10, n_envs, 89, 4)
+        piano_sustain_obs = self.generate_piano_and_sustain_state(current_piano_and_sustain)
+        zero_padding = np.zeros((10-1, self.n_envs, 89, 4), dtype=np.float32)   # n_step_lookahead=10
+        piano_sustain_obs = np.concatenate((piano_sustain_obs, zero_padding), axis=0)   # (buffer_size+9, n_envs, 89, 4)
+
+        g_t = self.observations[:, :, (15+15+10)*4:(15+15+10)*4+89*4]        # (buffer_size, n_envs, 89*4)
+
         for i in range(self.buffer_size):
-            her_goal[i] = np.concatenate(tuple(piano_sustain_obs[i:i+11]), axis=-2).reshape(self.n_envs, -1)  # (n_envs, 89*11*4) 
+            temp = np.concatenate(tuple(piano_sustain_obs[i:i+10]), axis=-2).reshape(self.n_envs, -1)  # (n_envs, 89*10*4) 
+            her_goal[i] = np.concatenate((g_t[i], temp), axis=-1)    # (n_envs, 89*11*4)
         
         return her_goal         # (buffer_size, n_envs, 89*11*4) 
 
-    def generate_her_indices(self):
+    def generate_her_indices_and_offset(self):
         her_indices = np.where(np.random.uniform(size=self.buffer_size*self.n_envs) < self.future_p)[0]
-        return her_indices // self.n_envs, her_indices % self.n_envs
+        buffer_idxs, env_idxs = her_indices // self.n_envs, her_indices % self.n_envs
+        offset_idxs = np.random.randint(buffer_idxs, self.buffer_size, size=her_indices.shape)
+        return buffer_idxs, env_idxs, offset_idxs
+    
+    def her_rew_func(self, buffer_idxs, env_idxs, offset_idxs):
+        K = len(buffer_idxs)    # batch size
+        _KEY_CLOSE_ENOUGH_TO_PRESSED = 0.05
+        goal = self.current_piano_and_sustain[offset_idxs, env_idxs, :]         # (K, 89)
+        actual = self.current_piano_and_sustain[buffer_idxs, env_idxs, :]       # (K, 89)
+        piano_activation = self.piano_activation[buffer_idxs, env_idxs, :]      # (K, 88)
+        
+        # sustain
+        sustain_rew =  tolerance(
+                            goal[:, -1] - actual[:, -1],
+                            bounds=(0, _KEY_CLOSE_ENOUGH_TO_PRESSED),
+                            margin=(_KEY_CLOSE_ENOUGH_TO_PRESSED * 10),
+                            sigmoid="gaussian",
+                        )
+        
+        # key press
+        key_press_rew = np.zeros((K,), dtype=np.float32)
+        rews = tolerance(
+            goal[:, :-1] - actual[:, :-1],
+            bounds=(0, _KEY_CLOSE_ENOUGH_TO_PRESSED),
+            margin=(_KEY_CLOSE_ENOUGH_TO_PRESSED * 10),
+            sigmoid="gaussian",
+        )
+        for i in range(K):
+            on = np.flatnonzero(goal[i, :-1])   # (88,) -> (n_on,)
+            if on.size > 0:
+                key_press_rew[i] += 0.5 * rews[i, on].mean()
+            # If there are any false positives, the remaining 0.5 reward is lost.
+            off = np.flatnonzero(1 - goal[i, :-1])
+            key_press_rew[i] += 0.5 * (1 - float(piano_activation[i, off].any()))
 
-    def process_her_obs_and_rew(self, her_goals, buffer_idxs, env_idxs):
+        return sustain_rew + 2 * key_press_rew
+
+    def process_her_obs_and_rew(self, her_goals, buffer_idxs, env_idxs, offset_idxs, rew_func):
         assert len(buffer_idxs) == len(env_idxs)
-        self.observations[buffer_idxs, env_idxs, (15+15+10)*4:(15+15+10)*4+979*4] = her_goals[buffer_idxs, env_idxs, :]
-        self.rewards[buffer_idxs, env_idxs] = self.her_rewards[buffer_idxs, env_idxs]
+        self.observations[buffer_idxs, env_idxs, (15+15+10)*4:(15+15+10)*4+979*4] = her_goals[offset_idxs, env_idxs, :]
+        self.rewards[buffer_idxs, env_idxs] = rew_func(buffer_idxs, env_idxs, offset_idxs) + self.mimic_rewards[buffer_idxs, env_idxs]
     ############################
     
     def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
@@ -133,9 +161,9 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
 
         ##### our modification #####
         if not self.generator_ready:
-            goals = self.generate_her_goal()
-            buffer_idxs, env_idxs = self.generate_her_indices()
-            self.process_her_obs_and_rew(goals, buffer_idxs, env_idxs)
+            goals = self.generate_her_goal(self.current_piano_and_sustain)
+            buffer_idxs, env_idxs, offset_idxs = self.generate_her_indices_and_offset()
+            self.process_her_obs_and_rew(goals, buffer_idxs, env_idxs, offset_idxs, self.her_rew_func)
         ############################
 
         indices = np.random.permutation(self.buffer_size * self.n_envs)
@@ -171,23 +199,6 @@ class RolloutHindsightReplayBuffer(RolloutBuffer):
         while start_idx < self.buffer_size * self.n_envs:
             yield self._get_samples(indices[start_idx : start_idx + batch_size])
             start_idx += batch_size
-
-    def _get_samples(
-        self,
-        batch_inds: np.ndarray,
-        env: Optional[VecNormalize] = None,
-    ) -> Tuple[RolloutBufferSamples, np.ndarray, np.ndarray]:
-
-        data = (
-            self.observations[batch_inds],
-            self.actions[batch_inds],
-            self.values[batch_inds].flatten(),
-            self.log_probs[batch_inds].flatten(),
-            self.advantages[batch_inds].flatten(),
-            self.returns[batch_inds].flatten(),
-        )
-
-        return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
     
 
 class HERPPO(PPO):
@@ -259,10 +270,10 @@ class HERPPO(PPO):
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             ##### our modification #####
-            her_rewards = np.array([infos[i]['her_key_reward']\
-                                    + infos[i]['her_sustain_reward']\
-                                    + infos[i]['her_mimic_reward'] for i in range(len(infos))])
-
+            mimic_rewards = np.array([infos[i]['her_mimic_reward'] for i in range(len(infos))])
+            curr_goal = np.array([infos[i]['current_goal'] for i in range(len(infos))])
+            curr_piano_and_sustain = np.array([infos[i]['current_piano_and_sustain'] for i in range(len(infos))])
+            piano_activation = np.array([infos[i]['piano_activation'] for i in range(len(infos))])
             ############################
 
             self.num_timesteps += env.num_envs
@@ -292,7 +303,7 @@ class HERPPO(PPO):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
                     rewards[idx] += self.gamma * terminal_value
                     ##### our modification #####
-                    her_rewards[idx] += self.gamma * terminal_value
+                    mimic_rewards[idx] += self.gamma * terminal_value
                     ############################
 
             rollout_buffer.add(     ###TODO: overload rollout_buffer.add
@@ -300,8 +311,10 @@ class HERPPO(PPO):
                 actions,
                 rewards,
                 ##### our modification #####
-                her_rewards,
-                new_obs,
+                mimic_rewards,
+                curr_goal,
+                curr_piano_and_sustain,
+                piano_activation,
                 ############################
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
@@ -326,31 +339,30 @@ import robopianist.wrappers as robopianist_wrappers
 class Dm2GymInfoWrapper(robopianist_wrappers.Dm2GymWrapper):
     def __init__(self, environment):
         super().__init__(environment)
-
+    
+    def _unwrap_env(self, env):
+        while hasattr(env, "env"):
+            env = env.env
+        return env
+    
     def step(self, action):
         timestep = self.env.step(action)
         observation = timestep.observation
         reward = timestep.reward
         done = timestep.last()
         info = {}
-
-        def unwrap_env(env):
-            while hasattr(env, "env"):
-                env = env.env
-            return env
         
-        base_env = unwrap_env(self.env)
+        base_env = self._unwrap_env(self.env)
         task = base_env.task
-        if hasattr(task, "_her_key_reward"):
-            info['her_key_reward'] = task._her_key_reward
-        if hasattr(task, "_her_sustain_reward"):
-            info['her_sustain_reward'] = task._her_sustain_reward
         if hasattr(task, "_her_mimic_reward"):
             info['her_mimic_reward'] = task._her_mimic_reward
-        if hasattr(task, "_obs_info"):
-            info['obs_info'] = task._obs_info
-        # if hasattr(task, "_norm_coeff"):
-        #     info['norm_coeff'] = task._norm_coeff
+        if hasattr(task, "_goal_state"):
+            info['current_goal'] = task._goal_state[0]  # (89,)
+        if hasattr(task, "_piano_state") and hasattr(task, "_sustain_state"):
+            info['current_piano_and_sustain'] = np.concatenate((task._piano_state, task._sustain_state.reshape(1)))
+        if hasattr(task, '_piano_activation'):
+            info['piano_activation'] = task._piano_activation
+
         return observation, reward, done, False, info
         
 import dm_env_wrappers as wrappers

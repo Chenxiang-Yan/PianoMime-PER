@@ -155,10 +155,20 @@ def main(args: Args) -> None:
                         reset_num_timesteps=False,
                         callback= None)
             # Evaluation
-            obs, _ = eval_env.reset()
+            obs, info_init = eval_env.reset()
+            # goal = obs[(15+15+10)*4:(15+15+10)*4+979*4].reshape(11,89,4).transpose(0,2,1)   # (11,4,89)
+            # print(info_init['goal_state'][:5])
+            # print('timestep t: ', goal[:5,3,:])
+            # print('timestep t-3: ', goal[:5,0,:])
+            # exit(1)           
             while True:
                 action, _state = model.predict(obs, deterministic=True)
                 obs, reward, done, _, info = eval_env.step(action)
+                # goal = obs[(15+15+10)*4:(15+15+10)*4+979*4].reshape(11,89,4).transpose(0,2,1)   # (11,4,89)
+                # print(info['goal_state'][:5])
+                # print('timestep t:\n', goal[:5,3,:])
+                # print('timestep t-1:\n', goal[:5,2,:])
+                # exit(1)  
                 if done == True:
                     break
             log_dict = prefix_dict("eval", eval_env.env.get_statistics())

@@ -317,14 +317,8 @@ class PianoWithShadowHandsResidual(base.PianoTask):
     def _compute_sustain_reward(self, physics: mjcf.Physics) -> float:
         """Reward for pressing the sustain pedal at the right time."""
         del physics  # Unused.
-        
-        her_rew = tolerance(
-            0.0 * (self._goal_current[-1] - self.piano.sustain_activation[0]),
-            bounds=(0, _KEY_CLOSE_ENOUGH_TO_PRESSED),
-            margin=(_KEY_CLOSE_ENOUGH_TO_PRESSED * 10),
-            sigmoid="gaussian",
-        )
-        self._her_sustain_reward = np.array(her_rew)
+
+        self._sustain_state = np.array(self.piano.sustain_activation[0])
 
         return tolerance(
             self._goal_current[-1] - self.piano.sustain_activation[0],
@@ -347,7 +341,6 @@ class PianoWithShadowHandsResidual(base.PianoTask):
         del physics  # Unused.
         on = np.flatnonzero(self._goal_current[:-1])
         rew = 0.0
-        her_rew = 0.0
         # It's possible we have no keys to press at this timestep, so we need to check
         # that `on` is not empty.
         if on.size > 0:
@@ -358,20 +351,13 @@ class PianoWithShadowHandsResidual(base.PianoTask):
                 margin=(_KEY_CLOSE_ENOUGH_TO_PRESSED * 10),
                 sigmoid="gaussian",
             )
-            her_rews = tolerance(
-                0.0 * (self._goal_current[:-1][on] - actual[on]),
-                bounds=(0, _KEY_CLOSE_ENOUGH_TO_PRESSED),
-                margin=(_KEY_CLOSE_ENOUGH_TO_PRESSED * 10),
-                sigmoid="gaussian",
-            )
             rew += 0.5 * rews.mean()
-            her_rew += 0.5 * her_rews.mean()
         # If there are any false positives, the remaining 0.5 reward is lost.
         off = np.flatnonzero(1 - self._goal_current[:-1])
         rew += 0.5 * (1 - float(self.piano.activation[off].any()))
-        her_rew += 0.5
-        self._her_key_reward = np.array(2*her_rew)
-        # self._norm_coeff = np.array(self.piano._qpos_range[:,1])
+
+        self._piano_state = np.array(self.piano.state / self.piano._qpos_range[:, 1])
+        self._piano_activation = np.array(self.piano.activation)
 
         return 2*rew
 

@@ -69,8 +69,12 @@ class RolloutPrioritizedReplayBuffer(RolloutBuffer):
         start_idx = 0
         while start_idx < self.buffer_size * self.n_envs:
             ##### OUR MODIFICATION #####
+            per = self.p / self.p.sum()
+            unif = np.ones(per.shape)
+            unif /= unif.sum()
+            dist = self._discount * per + (1 - self._discount) * unif
 
-            indices = np.random.choice(self.n_envs*self.buffer_size, size=batch_size, p=self.p / self.p.sum(), replace=True)
+            indices = np.random.choice(self.n_envs*self.buffer_size, size=batch_size, p=dist / dist.sum(), replace=True)
             yield self._get_samples(indices)
 
             ############################
@@ -131,7 +135,14 @@ class PERPPO(PPO):
         _init_setup_model: bool = True,
     ):        
         super().__init__(policy, env, learning_rate, n_steps, batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, normalize_advantage, ent_coef, vf_coef, max_grad_norm, use_sde, sde_sample_freq, rollout_buffer_class, rollout_buffer_kwargs, target_kl, stats_window_size, tensorboard_log, policy_kwargs, verbose, seed, device, _init_setup_model)
-       
+    
+    def learn(self,
+        total_timesteps: int,
+        step: int,
+        **kwargs):
+        self.rollout_buffer._discount = 0.999 ** step
+        super().learn(total_timesteps=total_timesteps, **kwargs)
+
     def train(self) -> None:
         """
         Update policy using the currently gathered rollout buffer.

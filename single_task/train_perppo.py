@@ -151,9 +151,10 @@ def main(args: Args) -> None:
         for i in range(args.total_iters):
             # Training
             model.learn(total_timesteps=args.n_steps*args.num_envs, 
+                        step= i,
                         progress_bar=True,
                         reset_num_timesteps=False,
-                        callback= None)
+                        callback= None,)
             # Evaluation
             obs, _ = eval_env.reset()
             while True:
